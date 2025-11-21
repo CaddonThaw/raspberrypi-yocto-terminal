@@ -57,6 +57,10 @@ repos:
     layers:
       meta-mender-raspberrypi:
 
+  raspberrypi-yocto-terminal:
+    path: layers/raspberrypi-yocto-terminal
+    branch: main
+
 machine: raspberrypi4  
 
 local_conf_header:
@@ -74,10 +78,17 @@ local_conf_header:
   
   raspberrypi: |
     RPI_USE_U_BOOT = "1"
-    ENABLE_UART = "1"
     MENDER_BOOT_PART_SIZE_MB = "100"
     IMAGE_INSTALL:append = " kernel-image kernel-devicetree"
     IMAGE_FSTYPES:remove = " rpi-sdimg"
+
+    # Enable I2C and UART
+    KERNEL_MODULE_AUTOLOAD:rpi += "i2c-dev"
+    ENABLE_I2C = "1"
+    ENABLE_UART = "1"
+
+    # Enable SSH server with openssh
+    IMAGE_FEATURES:append = " ssh-server-openssh"
   
   extra-users: |
     INHERIT += "extrausers"
