@@ -90,5 +90,9 @@ local_conf_header:
     # Enable SSH server with openssh
     IMAGE_FEATURES:append = " ssh-server-openssh"
   
+    # Copy rraspberrypi-yocto-terminal.dtbo to boot partition overlays directory
+    # This ensures the dtbo file is available in the boot partition for U-Boot to load
+    IMAGE_BOOT_FILES:append = " raspberrypi-yocto-terminal.dtbo;overlays/raspberrypi-yocto-terminal.dtbo"
+  
 target:
   - core-image-minimal
