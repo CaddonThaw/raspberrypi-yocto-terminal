@@ -90,10 +90,5 @@ local_conf_header:
     # Enable SSH server with openssh
     IMAGE_FEATURES:append = " ssh-server-openssh"
   
-  extra-users: |
-    INHERIT += "extrausers"
-    EXTRA_USERS_PARAMS = " useradd lee; \
-                           usermod -p '\$6\$urQp6UqD4yCx0g5F\$ijwBfXuW6VPb8Xecb/.ulfJU7yQe2OL4OY2.LE8ZMbnynWGOQMFqO.DWKWyHa27WYSx.gRJ5mfPs5Q55W7k8X.' lee;"
-
 target:
   - core-image-minimal
