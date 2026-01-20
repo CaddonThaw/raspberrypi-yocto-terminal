@@ -19,26 +19,66 @@ on:
         type: string
 
 jobs:
+  download-downloads-cache:
+    name: Download downloads cache
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download downloads cache
+        env:
+          SERVER_ADDR: ${{ inputs.server_address }}
+          SERVER_PASS: ${{ inputs.server_password }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass rsync
+          mkdir -p downloads
+          echo "Downloading downloads cache from $SERVER_ADDR..."
+          sshpass -p "$SERVER_PASS" rsync -avz --stats \
+            -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/downloads/ \
+            downloads/ || echo "Warning: downloads cache failed"
+          du -sh downloads/
+
+      - name: Upload downloads cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloads-cache
+          path: downloads/
+          retention-days: 1
+
+  download-sstate-cache:
+    name: Download sstate cache
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download sstate-cache
+        env:
+          SERVER_ADDR: ${{ inputs.server_address }}
+          SERVER_PASS: ${{ inputs.server_password }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass rsync
+          mkdir -p sstate-cache
+          echo "Downloading sstate-cache from $SERVER_ADDR..."
+          sshpass -p "$SERVER_PASS" rsync -avz --stats \
+            -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/sstate-cache/ \
+            sstate-cache/ || echo "Warning: sstate-cache failed"
+          du -sh sstate-cache/
+
+      - name: Upload sstate-cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: sstate-cache
+          path: sstate-cache/
+          retention-days: 1
+
   build-yocto-image:
     name: Build Yocto Image
     runs-on: ubuntu-24.04
-    timeout-minutes: 480
-
+    needs: [download-downloads-cache, download-sstate-cache]
     steps:
-      - name: Free disk space
-        run: |
-          echo "=== Cleaning up disk space ==="
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-          sudo apt-get remove -y '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-cloud-sdk
-          sudo apt-get autoremove -y
-          sudo apt-get clean
-          df -h
-
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 4096
-          swap-size-mb: 2048
+          root-reserve-mb: 3072
+          swap-size-mb: 1
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -58,8 +98,7 @@ jobs:
             gawk wget git diffstat unzip texinfo gcc build-essential \
             chrpath socat cpio python3-pexpect xz-utils debianutils \
             iputils-ping python3-git python3-pip python3-jinja2 \
-            libsdl1.2-dev xterm python3-subunit zstd liblz4-tool file locales \
-            sshpass rsync
+            libsdl1.2-dev xterm python3-subunit zstd liblz4-tool file locales
 
           sudo pip3 install kas
 
@@ -80,27 +119,23 @@ jobs:
 
           kas --version
 
-      - name: Download build cache from server
-        env:
-          SERVER_ADDR: ${{ inputs.server_address }}
-          SERVER_PASS: ${{ inputs.server_password }}
+      - name: Download downloads cache artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: downloads-cache
+          path: build/downloads/
+
+      - name: Download sstate-cache artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sstate-cache
+          path: build/sstate-cache/
+
+      - name: Verify cache
         run: |
-          echo "=== Downloading cache from $SERVER_ADDR ==="
-          
-          mkdir -p ${{ github.workspace }}/build/downloads
-          mkdir -p ${{ github.workspace }}/build/sstate-cache
-
-          echo "Downloading downloads cache..."
-          sshpass -p "$SERVER_PASS" rsync -avz --stats \
-            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/downloads/ \
-            ${{ github.workspace }}/build/downloads/ || echo "Warning: downloads cache failed"
-
-          echo "Downloading sstate-cache..."
-          sshpass -p "$SERVER_PASS" rsync -avz --stats \
-            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/sstate-cache/ \
-            ${{ github.workspace }}/build/sstate-cache/ || echo "Warning: sstate-cache failed"
-
-          du -sh ${{ github.workspace }}/build/* 2>/dev/null || true
+          echo "Cache status:"
+          du -sh build/downloads/ build/sstate-cache/ 2>/dev/null || echo "Cache not found"
+          df -h
 
       - name: Build Yocto image
         env:
@@ -120,29 +155,27 @@ jobs:
           echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_OUTPUT
           echo "SHORT_DATE=$SHORT_DATE" >> $GITHUB_OUTPUT
           echo "BUILD_ID=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "RELEASE_VERSION=${{ inputs.release_version }}" >> $GITHUB_OUTPUT
 
-          mkdir -p ${{ github.workspace }}/release
-          DEPLOY_DIR="${{ github.workspace }}/build/tmp/deploy/images/raspberrypi4"
+          mkdir -p release
+          DEPLOY_DIR="build/tmp/deploy/images/raspberrypi4"
 
           if [ -d "$DEPLOY_DIR" ]; then
-            # Copy and rename image file
             if [ -f "$DEPLOY_DIR/core-image-minimal-raspberrypi4.sdimg" ]; then
               cp "$DEPLOY_DIR/core-image-minimal-raspberrypi4.sdimg" \
-                 "${{ github.workspace }}/release/raspberrypi-yocto-terminal.img"
+                 "release/raspberrypi-yocto-terminal.img"
             fi
 
-            # Copy compressed image
             if [ -f "$DEPLOY_DIR/core-image-minimal-raspberrypi4.wic.bz2" ]; then
               cp "$DEPLOY_DIR/core-image-minimal-raspberrypi4.wic.bz2" \
-                 "${{ github.workspace }}/release/raspberrypi-yocto-terminal.wic.bz2"
+                 "release/raspberrypi-yocto-terminal.wic.bz2"
             fi
           else
             echo "Error: Deploy directory not found!"
             exit 1
           fi
 
-          # Create build info
-          cat > ${{ github.workspace }}/release/build_info.txt << EOF
+          cat > release/build_info.txt << EOF
           Raspberry Pi 4 Yocto Terminal Image
           ====================================
           
@@ -156,21 +189,71 @@ jobs:
           - raspberrypi-yocto-terminal.wic.bz2 - Compressed image
           EOF
 
-          ls -lh ${{ github.workspace }}/release/
+          ls -lh release/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yocto-images
+          path: release/
+          retention-days: 1
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## 🎉 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ inputs.release_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build ID**: ${{ steps.artifacts.outputs.BUILD_ID }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date**: ${{ steps.artifacts.outputs.BUILD_DATE }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -d "release" ]; then
+            echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+            for file in release/*; do
+              if [ -f "$file" ]; then
+                echo "- \`$(basename $file)\` ($(ls -lh $file | awk '{print $5}'))" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    needs: build-yocto-image
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: yocto-images
+          path: release/
+
+      - name: Get build info
+        id: info
+        run: |
+          if [ -f release/build_info.txt ]; then
+            cat release/build_info.txt
+            BUILD_DATE=$(grep "Date:" release/build_info.txt | cut -d: -f2- | xargs)
+            BUILD_ID=$(grep "Build ID:" release/build_info.txt | cut -d: -f2- | xargs)
+            COMMIT=$(grep "Commit:" release/build_info.txt | cut -d: -f2- | xargs)
+            echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_OUTPUT
+            echo "BUILD_ID=$BUILD_ID" >> $GITHUB_OUTPUT
+            echo "COMMIT=$COMMIT" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="v${{ inputs.release_version }}"
-          RELEASE_NAME="Raspberry Pi 4 Terminal v${{ inputs.release_version }}"
+          TAG_NAME="v${{ github.event.inputs.release_version }}"
+          RELEASE_NAME="Raspberry Pi 4 Terminal v${{ github.event.inputs.release_version }}"
 
           cat > release_notes.md << EOF
           ## Raspberry Pi 4 Yocto Terminal
           
-          **Version**: ${{ inputs.release_version }}  
-          **Built**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")  
-          **Commit**: ${GITHUB_SHA:0:8}
+          **Version**: ${{ github.event.inputs.release_version }}  
+          **Built**: ${{ steps.info.outputs.BUILD_DATE }}  
+          **Commit**: ${{ steps.info.outputs.COMMIT }}
           
           ### Installation
           \`\`\`bash
@@ -184,39 +267,20 @@ jobs:
           EOF
 
           if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            echo "Deleting existing release $TAG_NAME"
             gh release delete "$TAG_NAME" -y
           fi
 
           gh release create "$TAG_NAME" \
             --title "$RELEASE_NAME" \
             --notes-file release_notes.md \
-            ${{ github.workspace }}/release/*
+            release/*
 
-          echo "Release created: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG_NAME"
+          echo "✅ Release created: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG_NAME"
 
-      - name: Build summary
-        if: always()
-        run: |
-          echo "## 🎉 Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: ${{ inputs.release_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build ID**: ${{ steps.artifacts.outputs.BUILD_ID }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Date**: ${{ steps.artifacts.outputs.BUILD_DATE }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -d "${{ github.workspace }}/release" ]; then
-            echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
-            for file in ${{ github.workspace }}/release/*; do
-              if [ -f "$file" ]; then
-                echo "- \`$(basename $file)\` ($(ls -lh $file | awk '{print $5}'))" >> $GITHUB_STEP_SUMMARY
-              fi
-            done
-          fi
-
-      - name: Upload artifacts
-        if: success()
+      - name: Upload artifacts (backup)
         uses: actions/upload-artifact@v4
         with:
-          name: raspberrypi-yocto-terminal-v${{ inputs.release_version }}
-          path: ${{ github.workspace }}/release/
+          name: raspberrypi-yocto-terminal-v${{ github.event.inputs.release_version }}
+          path: release/
           retention-days: 30
