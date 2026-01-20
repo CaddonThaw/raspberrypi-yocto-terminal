@@ -23,51 +23,61 @@ jobs:
     name: Download downloads cache
     runs-on: ubuntu-24.04
     steps:
-      - name: Download downloads cache
+      - name: Download downloads cache tar
         env:
           SERVER_ADDR: ${{ inputs.server_address }}
           SERVER_PASS: ${{ inputs.server_password }}
         run: |
-          sudo apt-get update && sudo apt-get install -y sshpass rsync
-          mkdir -p downloads
-          echo "Downloading downloads cache from $SERVER_ADDR..."
-          sshpass -p "$SERVER_PASS" rsync -avz --stats \
-            -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
-            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/downloads/ \
-            downloads/ || echo "Warning: downloads cache failed"
-          du -sh downloads/
+          sudo apt-get update && sudo apt-get install -y sshpass
+          echo "Downloading downloads.tar from $SERVER_ADDR..."
+          sshpass -p "$SERVER_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/downloads.tar \
+            downloads.tar || { echo "Warning: downloads.tar download failed"; exit 0; }
+          
+          if [ -f "downloads.tar" ]; then
+            echo "downloads.tar downloaded successfully"
+            ls -lh downloads.tar
+          else
+            echo "Failed to download downloads.tar"
+          fi
 
-      - name: Upload downloads cache
+      - name: Upload downloads cache artifact
         uses: actions/upload-artifact@v4
         with:
           name: downloads-cache
-          path: downloads/
+          path: downloads.tar
           retention-days: 1
+        if: always()
 
   download-sstate-cache:
     name: Download sstate cache
     runs-on: ubuntu-24.04
     steps:
-      - name: Download sstate-cache
+      - name: Download sstate-cache tar
         env:
           SERVER_ADDR: ${{ inputs.server_address }}
           SERVER_PASS: ${{ inputs.server_password }}
         run: |
-          sudo apt-get update && sudo apt-get install -y sshpass rsync
-          mkdir -p sstate-cache
-          echo "Downloading sstate-cache from $SERVER_ADDR..."
-          sshpass -p "$SERVER_PASS" rsync -avz --stats \
-            -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
-            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/sstate-cache/ \
-            sstate-cache/ || echo "Warning: sstate-cache failed"
-          du -sh sstate-cache/
+          sudo apt-get update && sudo apt-get install -y sshpass
+          echo "Downloading sstate-cache.tar from $SERVER_ADDR..."
+          sshpass -p "$SERVER_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/sstate-cache.tar \
+            sstate-cache.tar || { echo "Warning: sstate-cache.tar download failed"; exit 0; }
+          
+          if [ -f "sstate-cache.tar" ]; then
+            echo "sstate-cache.tar downloaded successfully"
+            ls -lh sstate-cache.tar
+          else
+            echo "Failed to download sstate-cache.tar"
+          fi
 
-      - name: Upload sstate-cache
+      - name: Upload sstate-cache artifact
         uses: actions/upload-artifact@v4
         with:
           name: sstate-cache
-          path: sstate-cache/
+          path: sstate-cache.tar
           retention-days: 1
+        if: always()
 
   build-yocto-image:
     name: Build Yocto Image
@@ -119,22 +129,34 @@ jobs:
 
           kas --version
 
-      - name: Download downloads cache artifact
+      - name: Download cache artifacts
         uses: actions/download-artifact@v4
         with:
-          name: downloads-cache
-          path: build/downloads/
+          path: cache-temp/
 
-      - name: Download sstate-cache artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: sstate-cache
-          path: build/sstate-cache/
-
-      - name: Verify cache
+      - name: Extract cache archives
         run: |
-          echo "Cache status:"
-          du -sh build/downloads/ build/sstate-cache/ 2>/dev/null || echo "Cache not found"
+          mkdir -p build/downloads build/sstate-cache
+          
+          echo "Extracting downloads cache..."
+          if [ -f "cache-temp/downloads-cache/downloads.tar" ]; then
+            tar -xf cache-temp/downloads-cache/downloads.tar -C build/downloads/
+            echo "downloads cache extracted successfully"
+            du -sh build/downloads/
+          else
+            echo "No downloads.tar found"
+          fi
+          
+          echo "Extracting sstate-cache..."
+          if [ -f "cache-temp/sstate-cache/sstate-cache.tar" ]; then
+            tar -xf cache-temp/sstate-cache/sstate-cache.tar -C build/sstate-cache/
+            echo "sstate-cache extracted successfully"
+            du -sh build/sstate-cache/
+          else
+            echo "No sstate-cache.tar found"
+          fi
+          
+          rm -rf cache-temp
           df -h
 
       - name: Build Yocto image
