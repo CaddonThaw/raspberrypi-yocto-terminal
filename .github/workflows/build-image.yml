@@ -1,0 +1,222 @@
+name: Build Raspberry Pi 4 Terminal Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version'
+        required: false
+        default: '1.0.0'
+        type: string
+      server_address:
+        description: 'Cache server address'
+        required: false
+        default: 'ubuntu@119.91.232.180'
+        type: string
+      server_password:
+        description: 'Server SSH password'
+        required: true
+        type: string
+
+jobs:
+  build-yocto-image:
+    name: Build Yocto Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+
+    steps:
+      - name: Free disk space
+        run: |
+          echo "=== Cleaning up disk space ==="
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo apt-get remove -y '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-cloud-sdk
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          df -h
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          swap-size-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: layers/raspberrypi-yocto-terminal
+          fetch-depth: 0
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gawk wget git diffstat unzip texinfo gcc build-essential \
+            chrpath socat cpio python3-pexpect xz-utils debianutils \
+            iputils-ping python3-git python3-pip python3-jinja2 \
+            libsdl1.2-dev xterm python3-subunit zstd liblz4-tool file locales \
+            sshpass rsync
+
+          sudo pip3 install kas
+
+          sudo locale-gen --purge "en_US.UTF-8"
+          sudo update-locale "LANG=en_US.UTF-8"
+          sudo dpkg-reconfigure --frontend noninteractive locales
+
+          sudo rm -f /bin/sh && sudo ln -s bash /bin/sh
+
+          sudo tee /etc/apparmor.d/bitbake << EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bitbake /**/bitbake/bin/bitbake flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/bitbake
+
+          kas --version
+
+      - name: Download build cache from server
+        env:
+          SERVER_ADDR: ${{ inputs.server_address }}
+          SERVER_PASS: ${{ inputs.server_password }}
+        run: |
+          echo "=== Downloading cache from $SERVER_ADDR ==="
+          
+          mkdir -p ${{ github.workspace }}/build/downloads
+          mkdir -p ${{ github.workspace }}/build/sstate-cache
+
+          echo "Downloading downloads cache..."
+          sshpass -p "$SERVER_PASS" rsync -avz --stats \
+            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/downloads/ \
+            ${{ github.workspace }}/build/downloads/ || echo "Warning: downloads cache failed"
+
+          echo "Downloading sstate-cache..."
+          sshpass -p "$SERVER_PASS" rsync -avz --stats \
+            ${SERVER_ADDR}:~/raspberrypi-yocto-terminal/build-cache/sstate-cache/ \
+            ${{ github.workspace }}/build/sstate-cache/ || echo "Warning: sstate-cache failed"
+
+          du -sh ${{ github.workspace }}/build/* 2>/dev/null || true
+
+      - name: Build Yocto image
+        env:
+          KAS_WORK_DIR: ${{ github.workspace }}
+        run: |
+          echo "Starting build at $(date)"
+          kas build layers/raspberrypi-yocto-terminal/kas/raspberrypi-yocto-terminal.yml
+          echo "Build completed at $(date)"
+
+      - name: Prepare release artifacts
+        id: artifacts
+        run: |
+          BUILD_DATE=$(date -u +"%Y%m%d_%H%M%S")
+          SHORT_DATE=$(date -u +"%Y%m%d")
+          BUILD_ID="raspberrypi4-terminal_${SHORT_DATE}_${GITHUB_SHA:0:8}"
+          
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_OUTPUT
+          echo "SHORT_DATE=$SHORT_DATE" >> $GITHUB_OUTPUT
+          echo "BUILD_ID=$BUILD_ID" >> $GITHUB_OUTPUT
+
+          mkdir -p ${{ github.workspace }}/release
+          DEPLOY_DIR="${{ github.workspace }}/build/tmp/deploy/images/raspberrypi4"
+
+          if [ -d "$DEPLOY_DIR" ]; then
+            # Copy and rename image file
+            if [ -f "$DEPLOY_DIR/core-image-minimal-raspberrypi4.sdimg" ]; then
+              cp "$DEPLOY_DIR/core-image-minimal-raspberrypi4.sdimg" \
+                 "${{ github.workspace }}/release/raspberrypi-yocto-terminal.img"
+            fi
+
+            # Copy compressed image
+            if [ -f "$DEPLOY_DIR/core-image-minimal-raspberrypi4.wic.bz2" ]; then
+              cp "$DEPLOY_DIR/core-image-minimal-raspberrypi4.wic.bz2" \
+                 "${{ github.workspace }}/release/raspberrypi-yocto-terminal.wic.bz2"
+            fi
+          else
+            echo "Error: Deploy directory not found!"
+            exit 1
+          fi
+
+          # Create build info
+          cat > ${{ github.workspace }}/release/build_info.txt << EOF
+          Raspberry Pi 4 Yocto Terminal Image
+          ====================================
+          
+          Version: ${{ inputs.release_version }}
+          Build ID: ${BUILD_ID}
+          Date: ${BUILD_DATE}
+          Commit: ${GITHUB_SHA:0:8}
+          
+          Files:
+          - raspberrypi-yocto-terminal.img - SD card image
+          - raspberrypi-yocto-terminal.wic.bz2 - Compressed image
+          EOF
+
+          ls -lh ${{ github.workspace }}/release/
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="v${{ inputs.release_version }}"
+          RELEASE_NAME="Raspberry Pi 4 Terminal v${{ inputs.release_version }}"
+
+          cat > release_notes.md << EOF
+          ## Raspberry Pi 4 Yocto Terminal
+          
+          **Version**: ${{ inputs.release_version }}  
+          **Built**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")  
+          **Commit**: ${GITHUB_SHA:0:8}
+          
+          ### Installation
+          \`\`\`bash
+          sudo dd if=raspberrypi-yocto-terminal.img of=/dev/sdX bs=4M status=progress && sync
+          \`\`\`
+          
+          ### Files
+          - \`raspberrypi-yocto-terminal.img\` - SD card image
+          - \`raspberrypi-yocto-terminal.wic.bz2\` - Compressed image  
+          - \`build_info.txt\` - Build information
+          EOF
+
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release delete "$TAG_NAME" -y
+          fi
+
+          gh release create "$TAG_NAME" \
+            --title "$RELEASE_NAME" \
+            --notes-file release_notes.md \
+            ${{ github.workspace }}/release/*
+
+          echo "Release created: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG_NAME"
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## 🎉 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ inputs.release_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build ID**: ${{ steps.artifacts.outputs.BUILD_ID }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date**: ${{ steps.artifacts.outputs.BUILD_DATE }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -d "${{ github.workspace }}/release" ]; then
+            echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+            for file in ${{ github.workspace }}/release/*; do
+              if [ -f "$file" ]; then
+                echo "- \`$(basename $file)\` ($(ls -lh $file | awk '{print $5}'))" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+
+      - name: Upload artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raspberrypi-yocto-terminal-v${{ inputs.release_version }}
+          path: ${{ github.workspace }}/release/
+          retention-days: 30
